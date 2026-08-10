@@ -1,0 +1,312 @@
+import os
+import math
+import torch
+import random
+import numpy as np
+from pathlib import Path
+from collections import Counter
+from tqdm import tqdm, trange
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+
+from dataset import ChatTask2024
+from tokenizer import Tokenizer
+from transformer import Transformer
+from dataloader import CollateFn
+
+writer: SummaryWriter = None
+
+TB_MODE = os.getenv("TB_MODE", "enabled")
+if TB_MODE == "disabled":
+    class DummyWriter:
+        def __getattr__(self, name):
+            # Silently ignores all .add_scalar, .add_image, etc.
+            return lambda *args, **kwargs: None
+    writer = DummyWriter()
+    print("TensorBoard logging is DISABLED.")
+else:
+    writer = SummaryWriter()
+    print("TensorBoard logging is ENABLED.")
+
+def fetch_available_device() -> torch.device:
+    if torch.backends.mps.is_available():
+        print("Using device: mps")
+        return torch.device("mps")
+    elif torch.cuda.is_available():
+        print("Using device: cuda")
+        return torch.device("cuda")
+    else:
+        print("Using device: cpu")
+        return torch.device("cpu")
+
+def set_determinism():
+    # set seed, to be deterministic
+    seed = 123
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)  
+
+# adapted from: https://stackoverflow.com/a/30609050
+def find_ngrams(input_list: list[str], n: int) -> set[list[str]]:
+    return list(zip(*[input_list[i:] for i in range(n)]))
+
+def safe_div(num, den):
+    return num / den if den > 0 else 0
+
+def compute_bleu_score(prediction_token_list: list[list[str]], reference_token_list: list[list[str]]) -> float:
+    reference_length_sum = 0
+    prediction_length_sum = 0
+
+    for prediction_tokens, reference_tokens in zip(prediction_token_list, reference_token_list):
+        reference_length_sum += len(reference_tokens)
+        prediction_length_sum += len(prediction_tokens)
+
+    brevity_penalty = math.exp(-max(0, safe_div(reference_length_sum, prediction_length_sum) - 1))
+
+    paired = list(zip(prediction_token_list, reference_token_list))
+
+    nsum = 0.0
+    nrange = 4
+    smoothing_epsilon = 1e-9
+
+    for n in range(1, nrange + 1):
+        precision_numerator = 0
+        precision_denominator = 0
+
+        for prediction_tokens, reference_tokens in paired:
+            prediction_ngrams = find_ngrams(prediction_tokens, n)
+            reference_ngrams = find_ngrams(reference_tokens, n)
+
+            prediction_counts = Counter(prediction_ngrams)
+            reference_counts = Counter(reference_ngrams)
+
+            for ngram, count in prediction_counts.items():
+                precision_numerator += min(count, reference_counts.get(ngram, 0))
+                precision_denominator += count
+
+        precision = safe_div(precision_numerator, precision_denominator)
+
+        precision = max(precision, smoothing_epsilon)
+        nsum += math.log(precision) * (1 / nrange)
+
+    return brevity_penalty * math.exp(nsum)
+
+def moving_average(element: float, count: int, mean: float) -> float:
+    return (element + count * mean) / (count + 1)
+
+def val(model: Transformer, val_dataloader: DataLoader, tokenizer_target: Tokenizer, device: torch.device):
+    loss = 0.0
+    bleu_score = 0.0
+    pbar = tqdm(val_dataloader, desc="Validation", leave=False)
+    for count, batch in enumerate(pbar, start=1):
+        
+        source, source_mask, target, target_mask, source_str, target_str = batch
+
+        source = source.to(device) 
+        source_mask = source_mask.to(device)
+        target = target.to(device)
+        target_mask = target_mask.to(device)
+
+        # mask created to skip the special token <END> in the target
+        remove_end_token_mask = torch.where(target == Tokenizer.SpecialTokens.END.id, False, True)
+
+        batch_size = source.size(0)
+        with torch.no_grad():
+            output_logits: torch.Tensor = model(source, 
+                                                source_mask, 
+                                                target[remove_end_token_mask].reshape(batch_size, -1), 
+                                                target_mask[remove_end_token_mask].reshape(batch_size, -1))
+
+        # cross entropy expects input dims: (batch, classes, k1, ..., kn) where ki are any extra dims
+        # NOTE: skipping the special token <START> in the target
+        batch_loss = torch.nn.functional.cross_entropy(output_logits.transpose(1, 2),
+                                                       target[..., 1:],
+                                                       ignore_index=Tokenizer.SpecialTokens.PADDING.id)        
+        
+        loss = moving_average(batch_loss.item(), count, loss)
+
+        output_tokens: list[list[int]] = output_logits.argmax(dim=-1).cpu().numpy().tolist()
+        output_tokens = tokenizer_target.cap_after_end(output_tokens)
+
+        output_tokens_str = tokenizer_target.untokenize(output_tokens)
+        target_tokens_str = tokenizer_target.untokenize(tokenizer_target.tokenize(target_str))
+
+        batch_bleu_score = compute_bleu_score(output_tokens_str, target_tokens_str)
+        bleu_score = moving_average(batch_bleu_score, count, bleu_score)
+
+    output_str = [" ".join(tokens_str) for tokens_str in output_tokens_str]
+
+    for count, (s, t, o) in enumerate(zip(source_str, target_str, output_str), start=1):
+        if count >= 10:
+            break
+        pbar.write(f"Source: {s}")
+        pbar.write(f"Target: {t}")
+        pbar.write(f"Output: {o}")
+
+    last_batch_data = [source_str, target_str, output_str]
+
+    return loss, bleu_score, last_batch_data
+                                      
+def train(model: Transformer, 
+          optimizer: torch.optim.Optimizer, 
+          scheduler: torch.optim.lr_scheduler.LRScheduler,
+          train_dataloader: DataLoader,
+          device: torch.device,
+          epoch: int) -> float:
+    loss = 0.0
+    pbar = tqdm(train_dataloader, desc="Training", leave=False)
+    for count, batch in enumerate(pbar, start=1):
+
+        optimizer.zero_grad()
+
+        source, source_mask, target, target_mask, source_str, target_str = batch
+        source = source.to(device)
+        source_mask = source_mask.to(device)
+        target = target.to(device)
+        target_mask = target_mask.to(device)        
+
+        # mask created to skip the special token <END> in the target
+        remove_end_token_mask = torch.where(target == Tokenizer.SpecialTokens.END.id, False, True)
+
+        batch_size = source.size(0)
+        output_logits: torch.Tensor = model(source, 
+                                            source_mask, 
+                                            target[remove_end_token_mask].reshape(batch_size, -1), 
+                                            target_mask[remove_end_token_mask].reshape(batch_size, -1))
+
+        # cross entropy expects input dims: (batch, classes, k1, ..., kn) where ki are any extra dims
+        # NOTE: skipping the special token <START> in the target
+        batch_loss = torch.nn.functional.cross_entropy(output_logits.transpose(1, 2),
+                                                       target[..., 1:],
+                                                       ignore_index=Tokenizer.SpecialTokens.PADDING.id,
+                                                       label_smoothing=0.1)
+
+        batch_loss.backward()
+
+        # gradient clipping to avoid large changes in the weights
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+        optimizer.step()
+        # step-based (not epoch-based) lr computation
+        scheduler.step()
+
+        loss = moving_average(batch_loss.item(), count, loss)
+
+        step = epoch * len(train_dataloader) + count
+        writer.add_scalar("train/loss", batch_loss.item(), step)
+
+    return loss
+
+def train_val_loop(num_epochs: int, 
+                   model: Transformer, 
+                   optimizer: torch.optim.Optimizer,
+                   scheduler: torch.optim.lr_scheduler.LRScheduler,
+                   train_dataloader: DataLoader, 
+                   val_dataloader: DataLoader,
+                   tokenizer_target: Tokenizer,
+                   device: torch.device, 
+                   eval_every_n_epochs: int):
+
+    val_loss = np.nan
+    train_loss = np.nan
+    best_bleu_score = 0.0
+
+    pbar = trange(1, num_epochs + 1, desc="Epochs")
+    for epoch in pbar:
+        model.train()
+        train_loss = train(model, optimizer, scheduler, train_dataloader, device, epoch)
+        pbar.set_description(f"Losses train: {train_loss:.3f}, val: {val_loss:.3f}")
+
+        if TB_MODE != "disabled":
+            torch.save(model.state_dict(), Path(writer.get_logdir()) / "last.pth")
+
+        is_eval = epoch % eval_every_n_epochs == 0
+        if not is_eval:
+            writer.flush()
+            continue
+
+        pbar.write(f"Validation output (epoch {epoch}): ")
+
+        model.eval()
+        val_loss, bleu_score, last_batch_data = val(model, val_dataloader, tokenizer_target, device)
+
+        if bleu_score > best_bleu_score and TB_MODE != "disabled":
+            best_bleu_score = bleu_score
+            torch.save(model.state_dict(), Path(writer.get_logdir()) / "best.pth")
+
+        is_first_eval = epoch // eval_every_n_epochs == 1
+        step = epoch * len(train_dataloader)
+
+        if is_first_eval:
+            writer.add_text("eval/source", "\n".join(last_batch_data[0][::4]), step)
+            writer.add_text("eval/target", "\n".join(last_batch_data[1][::4]), step)
+
+        writer.add_text("eval/prediction", "\n".join(last_batch_data[2][::4]), step)
+
+        writer.add_scalar("eval/loss", val_loss, step)
+        writer.add_scalar("eval/bleu", bleu_score, step)
+        writer.flush()
+
+def main():
+    set_determinism()
+    
+    # debugging to check if nan pollutes the model
+    # torch.autograd.set_detect_anomaly(True)
+
+    first_n_samples = -1
+    train_dataset = ChatTask2024("./chat-task-2024-data/", split="train", source_language="en", first_n_samples=first_n_samples)
+    val_dataset = ChatTask2024("./chat-task-2024-data/", split="valid", source_language="en", first_n_samples=first_n_samples)
+
+    tokenizer_source = Tokenizer()
+    tokenizer_source.compute_tokens(train_dataset.source)
+
+    tokenizer_target = Tokenizer()
+    tokenizer_target.compute_tokens(train_dataset.target)
+
+    device = fetch_available_device()
+
+    num_heads = 8
+    num_encoders = 6
+    num_decoders = 6
+    embedding_size = 256
+    padding_idx = Tokenizer.SpecialTokens.PADDING.id
+    num_tokens_source = len(tokenizer_source)
+    num_tokens_target = len(tokenizer_target)
+    model = Transformer(num_tokens_source, 
+                        num_tokens_target, 
+                        padding_idx, 
+                        num_encoders, 
+                        num_decoders, 
+                        num_heads, 
+                        embedding_size, 
+                        device)
+
+    collate_fn = CollateFn(tokenizer_source, tokenizer_target)
+
+    num_workers = 0
+    batch_size = 128
+    train_dataloader = DataLoader(train_dataset, 
+                                  batch_size, 
+                                  num_workers=num_workers,
+                                  persistent_workers=(num_workers > 0),
+                                  shuffle=True,
+                                  collate_fn=collate_fn)
+
+    val_dataloader = DataLoader(val_dataset, 
+                                batch_size, 
+                                shuffle=False, 
+                                collate_fn=collate_fn)    
+
+    lr = 1e-4
+    optimizer = torch.optim.Adam(model.parameters(), lr, betas=(0.9, 0.98), eps=1e-9)
+
+    num_epochs = 100
+
+    total_steps = len(train_dataloader) * num_epochs
+    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.01, total_iters=total_steps)
+
+    eval_every_n_epochs = 5
+    train_val_loop(num_epochs, model, optimizer, scheduler, train_dataloader, val_dataloader, tokenizer_target, device, eval_every_n_epochs)
+
+if __name__ == "__main__":
+    main()
