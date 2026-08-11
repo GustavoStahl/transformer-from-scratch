@@ -238,10 +238,13 @@ def train_val_loop(num_epochs: int,
         step = epoch * len(train_dataloader)
 
         if is_first_eval:
-            writer.add_text("eval/source", "\n".join(last_batch_data[0][::4]), step)
-            writer.add_text("eval/target", "\n".join(last_batch_data[1][::4]), step)
+            source_str = [f"{i:>2}: \"{s}\"" for i, s in enumerate(last_batch_data[0][::4], start=1)]
+            writer.add_text("eval/source", "\n".join(source_str), step)
+            target_str = [f"{i:>2}: \"{s}\"" for i, s in enumerate(last_batch_data[1][::4], start=1)]
+            writer.add_text("eval/target", "\n".join(target_str), step)
 
-        writer.add_text("eval/prediction", "\n".join(last_batch_data[2][::4]), step)
+        prediction_str = [f"{i:>2}: \"{s}\"" for i, s in enumerate(last_batch_data[2][::4], start=1)]
+        writer.add_text("eval/prediction", "\n".join(prediction_str), step)
 
         writer.add_scalar("eval/loss", val_loss, step)
         writer.add_scalar("eval/bleu", bleu_score, step)
