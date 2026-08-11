@@ -136,11 +136,7 @@ class Tokenizer(object):
         for tt in tokenized_texts:
             try:
                 end_idx = tt.index(cls.SpecialTokens.END.id)
-                before_end_idx = end_idx - 1
-                if before_end_idx < 0:
-                    capped.append([])
-                else:
-                    capped.append(tt[:end_idx - 1])
+                capped.append(tt[:end_idx])
             # no end found
             except ValueError:
                 capped.append([])
