@@ -331,7 +331,12 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), args.lr, betas=(0.9, 0.98), eps=1e-9)
 
     total_steps = len(train_dataloader) * args.epochs
-    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.01, total_iters=total_steps)
+    warmup_steps = int(total_steps * 0.05)
+    decay_steps = total_steps - warmup_steps
+    scheduler_warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps)
+    scheduler_decay = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=decay_steps, eta_min=args.lr * 0.01)
+    # switch after warmup steps
+    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [scheduler_warmup, scheduler_decay], milestones=[warmup_steps])
 
     train_val_loop(args.epochs, 
                    model, 
