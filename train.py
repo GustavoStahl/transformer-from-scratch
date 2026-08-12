@@ -94,6 +94,7 @@ def compute_bleu_score(prediction_token_list: list[list[str]], reference_token_l
 def moving_average(element: float, count: int, mean: float) -> float:
     return (element + count * mean) / (count + 1)
 
+@torch.no_grad()
 def val(model: Transformer, val_dataloader: DataLoader, tokenizer_target: Tokenizer, device: torch.device):
     loss = 0.0
     bleu_score = 0.0
@@ -111,11 +112,10 @@ def val(model: Transformer, val_dataloader: DataLoader, tokenizer_target: Tokeni
         remove_end_token_mask = torch.where(target == Tokenizer.SpecialTokens.END.id, False, True)
 
         batch_size = source.size(0)
-        with torch.no_grad():
-            output_logits: torch.Tensor = model(source, 
-                                                source_mask, 
-                                                target[remove_end_token_mask].reshape(batch_size, -1), 
-                                                target_mask[remove_end_token_mask].reshape(batch_size, -1))
+        output_logits: torch.Tensor = model(source, 
+                                            source_mask, 
+                                            target[remove_end_token_mask].reshape(batch_size, -1), 
+                                            target_mask[remove_end_token_mask].reshape(batch_size, -1))
 
         # cross entropy expects input dims: (batch, classes, k1, ..., kn) where ki are any extra dims
         # NOTE: skipping the special token <START> in the target
