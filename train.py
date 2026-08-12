@@ -2,6 +2,7 @@ import os
 import math
 import torch
 import random
+import argparse
 import numpy as np
 from pathlib import Path
 from collections import Counter
@@ -252,15 +253,37 @@ def train_val_loop(num_epochs: int,
         writer.add_scalar("eval/bleu", bleu_score, step)
         writer.flush()
 
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset-root", "-d", type=str, default="./chat-task-2024-data/",
+                        help="Path to the WMT 2024 Chat task dataset.")      
+    parser.add_argument("--epochs", "-e", type=int, default=100,
+                        help="Number of training epochs.")
+    parser.add_argument("--eval-every-n-epochs", "-v", type=int, default=5,
+                        help="Validate every n epochs.")
+    parser.add_argument("--batch-size", "-b", type=int, default=128,
+                        help="Batch size used for training. The higher the better but slower.")
+    parser.add_argument("--embedding-size", "-k", type=int, default=256,
+                        help="Embedding size used for training. The higher the better but slower.")
+    parser.add_argument("--lr", "-l", type=float, default=1e-4,
+                        help="Learning rate used for training. "
+                             "If too high the model weights might take steep steps during optimization.")  
+    parser.add_argument("--first-n-samples", "-f", type=int, default=-1,
+                        help="Train using only the first n samples. Useful for debugging.")
+    parser.add_argument("--load-model-path", "-p", type=str, default="",
+                        help="Load the model weights from the provided path.")
+    
+    return parser.parse_args()
+
 def main():
+    args = get_args()
     set_determinism()
     
     # debugging to check if nan pollutes the model
     # torch.autograd.set_detect_anomaly(True)
 
-    first_n_samples = -1
-    train_dataset = ChatTask2024("./chat-task-2024-data/", split="train", source_language="en", first_n_samples=first_n_samples)
-    val_dataset = ChatTask2024("./chat-task-2024-data/", split="valid", source_language="en", first_n_samples=first_n_samples)
+    train_dataset = ChatTask2024(args.dataset_root, split="train", source_language="en", first_n_samples=args.first_n_samples)
+    val_dataset = ChatTask2024(args.dataset_root, split="valid", source_language="en", first_n_samples=args.first_n_samples)
 
     tokenizer_source = Tokenizer()
     tokenizer_source.compute_tokens(train_dataset.source)
@@ -273,7 +296,6 @@ def main():
     num_heads = 8
     num_encoders = 6
     num_decoders = 6
-    embedding_size = 256
     padding_idx = Tokenizer.SpecialTokens.PADDING.id
     num_tokens_source = len(tokenizer_source)
     num_tokens_target = len(tokenizer_target)
@@ -283,35 +305,38 @@ def main():
                         num_encoders, 
                         num_decoders, 
                         num_heads, 
-                        embedding_size, 
+                        args.embedding_size, 
                         device)
 
     collate_fn = CollateFn(tokenizer_source, tokenizer_target)
 
     num_workers = 0
-    batch_size = 128
     train_dataloader = DataLoader(train_dataset, 
-                                  batch_size, 
+                                  args.batch_size, 
                                   num_workers=num_workers,
                                   persistent_workers=(num_workers > 0),
                                   shuffle=True,
                                   collate_fn=collate_fn)
 
     val_dataloader = DataLoader(val_dataset, 
-                                batch_size, 
+                                args.batch_size, 
                                 shuffle=False, 
                                 collate_fn=collate_fn)    
 
-    lr = 1e-4
-    optimizer = torch.optim.Adam(model.parameters(), lr, betas=(0.9, 0.98), eps=1e-9)
+    optimizer = torch.optim.Adam(model.parameters(), args.lr, betas=(0.9, 0.98), eps=1e-9)
 
-    num_epochs = 100
-
-    total_steps = len(train_dataloader) * num_epochs
+    total_steps = len(train_dataloader) * args.epochs
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.01, total_iters=total_steps)
 
-    eval_every_n_epochs = 5
-    train_val_loop(num_epochs, model, optimizer, scheduler, train_dataloader, val_dataloader, tokenizer_target, device, eval_every_n_epochs)
+    train_val_loop(args.epochs, 
+                   model, 
+                   optimizer, 
+                   scheduler, 
+                   train_dataloader, 
+                   val_dataloader, 
+                   tokenizer_target, 
+                   device, 
+                   args.eval_every_n_epochs)
 
 if __name__ == "__main__":
     main()
