@@ -308,6 +308,11 @@ def main():
                         args.embedding_size, 
                         device)
 
+    load_model_path = Path(args.load_model_path)
+    if load_model_path.is_file() and load_model_path.suffix == ".pth":
+        print(f"Loading model from path: {load_model_path}")
+        model.load_state_dict(torch.load(load_model_path, map_location=device))
+
     collate_fn = CollateFn(tokenizer_source, tokenizer_target)
 
     num_workers = 0
