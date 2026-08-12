@@ -195,6 +195,8 @@ def train(model: Transformer,
         step = epoch * len(train_dataloader) + count
         writer.add_scalar("train/loss", batch_loss.item(), step)
 
+    writer.add_scalar("train/lr", scheduler.get_last_lr()[0], step)
+
     return loss
 
 def train_val_loop(num_epochs: int, 
