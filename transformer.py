@@ -162,6 +162,22 @@ class Decoder(nn.Module):
         ff_out = self.ff(head_norm)
         return self.ff_norm(ff_out + head_norm) # skip connection + norm
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, embedding_size: int, max_len: int, device: torch.device):
+        super().__init__()
+        pe_div = torch.pow(torch.tensor(1e4), torch.arange(0, embedding_size, 2) / embedding_size) 
+        pe_matrix = torch.arange(max_len).reshape(-1, 1).repeat(1, embedding_size).float()
+
+        pe_matrix[:, 0::2] = torch.sin(pe_matrix[:, 0::2] / pe_div)
+        pe_matrix[:, 1::2] = torch.cos(pe_matrix[:, 1::2] / pe_div)
+
+        pe_matrix = pe_matrix.to(device)
+        self.register_buffer("pe_matrix", pe_matrix)
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        seq_len: int = X.size(1)
+        return X + self.pe_matrix[:seq_len]
+
 class Transformer(nn.Module):
     def __init__(self, 
                  num_tokens_X: int, 
@@ -175,27 +191,13 @@ class Transformer(nn.Module):
         super().__init__()
         self.embedding_X = nn.Embedding(num_tokens_X, embedding_size, padding_idx=padding_idx, device=device)
         self.embedding_Y = nn.Embedding(num_tokens_Y, embedding_size, padding_idx=padding_idx, device=device)
+        self.positional_encoding = PositionalEncoding(embedding_size, max_len=1024, device=device)
         self.dropout_encoder = nn.Dropout(0.1, inplace=True)
         self.dropout_decoder = nn.Dropout(0.1, inplace=True)
         self.encoders = nn.ModuleList([Encoder(num_heads, embedding_size, device) for _ in range(num_encoders)])
         self.decoders = nn.ModuleList([Decoder(num_heads, embedding_size, device) for _ in range(num_decoders)])
         self.linear = nn.Linear(embedding_size, num_tokens_Y, device=device)
         self.embedding_size_sqrt = torch.tensor(embedding_size).sqrt()
-
-        pe_div = torch.pow(torch.tensor(1e4), torch.arange(0, embedding_size, 2) / embedding_size) 
-        self.register_buffer("pe_div", pe_div)
-
-    def positional_encoding(self, X: torch.Tensor) -> torch.Tensor:
-        seq_len: int = X.size(1)
-        embedding_size: int = X.size(2)
-        pe_matrix = torch.arange(seq_len).reshape(-1, 1).repeat(1, embedding_size).float()
-
-        pe_matrix[:, 0::2] = torch.sin(pe_matrix[:, 0::2] / self.pe_div)
-        pe_matrix[:, 1::2] = torch.cos(pe_matrix[:, 1::2] / self.pe_div)
-
-        pe_matrix = pe_matrix.to(X.device)
-
-        return X + pe_matrix
 
     def forward(self, X: torch.Tensor, X_pad_mask: torch.Tensor, Y: torch.Tensor, Y_pad_mask: torch.Tensor) -> torch.Tensor:
         encoder_in = self.positional_encoding(self.embedding_X(X) * self.embedding_size_sqrt)
