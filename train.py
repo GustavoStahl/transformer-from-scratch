@@ -1,9 +1,9 @@
-import os
 import math
 import torch
 import random
 import argparse
 import numpy as np
+from typing import Optional
 from pathlib import Path
 from collections import Counter
 from tqdm import tqdm, trange
@@ -15,19 +15,8 @@ from tokenizer import Tokenizer
 from transformer import Transformer
 from dataloader import CollateFn
 
-writer: SummaryWriter = None
-
-TB_MODE = os.getenv("TB_MODE", "enabled")
-if TB_MODE == "disabled":
-    class DummyWriter:
-        def __getattr__(self, name):
-            # Silently ignores all .add_scalar, .add_image, etc.
-            return lambda *args, **kwargs: None
-    writer = DummyWriter()
-    print("TensorBoard logging is DISABLED.")
-else:
-    writer = SummaryWriter()
-    print("TensorBoard logging is ENABLED.")
+writer: Optional[SummaryWriter] = None
+no_tensorboard: bool = False
 
 def fetch_available_device() -> torch.device:
     if torch.backends.mps.is_available():
@@ -220,7 +209,7 @@ def train_val_loop(num_epochs: int,
         train_loss = train(model, optimizer, scheduler, train_dataloader, device, epoch)
         pbar.set_description(f"Losses train: {train_loss:.3f}, val: {val_loss:.3f}")
 
-        if TB_MODE != "disabled":
+        if not no_tensorboard:
             torch.save(model.state_dict(), Path(writer.get_logdir()) / "last.pth")
 
         is_eval = epoch % eval_every_n_epochs == 0
@@ -233,7 +222,7 @@ def train_val_loop(num_epochs: int,
         model.eval()
         val_loss, bleu_score, last_batch_data = val(model, val_dataloader, tokenizer_target, device)
 
-        if bleu_score > best_bleu_score and TB_MODE != "disabled":
+        if bleu_score > best_bleu_score and not no_tensorboard:
             best_bleu_score = bleu_score
             torch.save(model.state_dict(), Path(writer.get_logdir()) / "best.pth")
 
@@ -252,6 +241,22 @@ def train_val_loop(num_epochs: int,
         writer.add_scalar("eval/loss", val_loss, step)
         writer.add_scalar("eval/bleu", bleu_score, step)
         writer.flush()
+
+def set_tensorboard(experiment_name: Optional[str] = None):
+    global writer
+    if no_tensorboard:
+        class DummyWriter:
+            def __getattr__(self, name):
+                # Silently ignores all .add_scalar, .add_image, etc.
+                return lambda *args, **kwargs: None
+        writer = DummyWriter()
+        print("TensorBoard logging is DISABLED.")
+    else:
+        if experiment_name is not None:
+            writer = SummaryWriter(Path("runs") / experiment_name)
+        else:
+            writer = SummaryWriter()
+        print("TensorBoard logging is ENABLED.")    
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -272,11 +277,20 @@ def get_args():
                         help="Train using only the first n samples. Useful for debugging.")
     parser.add_argument("--load-model-path", "-p", type=str, default="",
                         help="Load the model weights from the provided path.")
+    parser.add_argument("--experiment-name", type=str, default=None,
+                        help="Name of the experiment.") 
+    parser.add_argument("--no-tensorboard", action="store_true",
+                        help="Disable TensorBoard.")
     
     return parser.parse_args()
 
 def main():
     args = get_args()
+
+    global no_tensorboard
+    no_tensorboard = args.no_tensorboard
+    set_tensorboard(args.experiment_name)
+
     set_determinism()
     
     # debugging to check if nan pollutes the model

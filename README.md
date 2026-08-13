@@ -41,4 +41,4 @@ Access the training visualizer at: http://localhost:6006.
 
 ![Metrics logged to TensorBoard](docs/tensorboard-metrics.png)
 
-> Skip training with tensorboard by adding `TB_MODE=disabled` before launching the training script. Example: `TB_MODE=disabled python train.py`.
+> Skip training with tensorboard by adding the flag `--no-tensorboard`. Example: `python train.py --no-tensorboard`.
