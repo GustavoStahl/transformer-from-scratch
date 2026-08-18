@@ -3,3 +3,4 @@ numpy==2.2.6
 tqdm==4.70.0
 tensorboard==2.21.0
 pandas==2.3.3
+regex==2026.7.19

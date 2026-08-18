@@ -10,6 +10,7 @@ Implementation of the Transformer architecture, introduced in the paper: ["Atten
 
 # Requirements
 - tqdm
+- regex
 - NumPy
 - pandas
 - PyTorch

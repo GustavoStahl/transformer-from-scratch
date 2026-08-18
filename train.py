@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from dataset import ChatTask2024
-from tokenizer import Tokenizer
+from tokenizer import TokenizerWords
 from transformer import Transformer
 from dataloader import CollateFn
 
@@ -85,7 +85,7 @@ def moving_average(element: float, count: int, mean: float) -> float:
     return (element + count * mean) / (count + 1)
 
 @torch.no_grad()
-def val(model: Transformer, val_dataloader: DataLoader, tokenizer_target: Tokenizer, device: torch.device):
+def val(model: Transformer, val_dataloader: DataLoader, tokenizer_target: TokenizerWords, device: torch.device):
     loss = 0.0
     bleu_score = 0.0
     pbar = tqdm(val_dataloader, desc="Validation", leave=False)
@@ -99,7 +99,7 @@ def val(model: Transformer, val_dataloader: DataLoader, tokenizer_target: Tokeni
         target_mask = target_mask.to(device)
 
         # mask created to skip the special token <END> in the target
-        remove_end_token_mask = torch.where(target == Tokenizer.SpecialTokens.END.id, False, True)
+        remove_end_token_mask = torch.where(target == TokenizerWords.SpecialTokens.END.id, False, True)
 
         batch_size = source.size(0)
         output_logits: torch.Tensor = model(source, 
@@ -111,7 +111,7 @@ def val(model: Transformer, val_dataloader: DataLoader, tokenizer_target: Tokeni
         # NOTE: skipping the special token <START> in the target
         batch_loss = torch.nn.functional.cross_entropy(output_logits.transpose(1, 2),
                                                        target[..., 1:],
-                                                       ignore_index=Tokenizer.SpecialTokens.PADDING.id)        
+                                                       ignore_index=TokenizerWords.SpecialTokens.PADDING.id)        
         
         loss = moving_average(batch_loss.item(), count, loss)
 
@@ -156,7 +156,7 @@ def train(model: Transformer,
         target_mask = target_mask.to(device)        
 
         # mask created to skip the special token <END> in the target
-        remove_end_token_mask = torch.where(target == Tokenizer.SpecialTokens.END.id, False, True)
+        remove_end_token_mask = torch.where(target == TokenizerWords.SpecialTokens.END.id, False, True)
 
         batch_size = source.size(0)
         output_logits: torch.Tensor = model(source, 
@@ -168,7 +168,7 @@ def train(model: Transformer,
         # NOTE: skipping the special token <START> in the target
         batch_loss = torch.nn.functional.cross_entropy(output_logits.transpose(1, 2),
                                                        target[..., 1:],
-                                                       ignore_index=Tokenizer.SpecialTokens.PADDING.id,
+                                                       ignore_index=TokenizerWords.SpecialTokens.PADDING.id,
                                                        label_smoothing=0.1)
 
         batch_loss.backward()
@@ -195,7 +195,7 @@ def train_val_loop(num_epochs: int,
                    scheduler: torch.optim.lr_scheduler.LRScheduler,
                    train_dataloader: DataLoader, 
                    val_dataloader: DataLoader,
-                   tokenizer_target: Tokenizer,
+                   tokenizer_target: TokenizerWords,
                    device: torch.device, 
                    eval_every_n_epochs: int):
 
@@ -299,10 +299,10 @@ def main():
     train_dataset = ChatTask2024(args.dataset_root, split="train", source_language="en", first_n_samples=args.first_n_samples)
     val_dataset = ChatTask2024(args.dataset_root, split="valid", source_language="en", first_n_samples=args.first_n_samples)
 
-    tokenizer_source = Tokenizer()
+    tokenizer_source = TokenizerWords()
     tokenizer_source.compute_tokens(train_dataset.source)
 
-    tokenizer_target = Tokenizer()
+    tokenizer_target = TokenizerWords()
     tokenizer_target.compute_tokens(train_dataset.target)
 
     device = fetch_available_device()
@@ -310,7 +310,7 @@ def main():
     num_heads = 8
     num_encoders = 6
     num_decoders = 6
-    padding_idx = Tokenizer.SpecialTokens.PADDING.id
+    padding_idx = TokenizerWords.SpecialTokens.PADDING.id
     num_tokens_source = len(tokenizer_source)
     num_tokens_target = len(tokenizer_target)
     model = Transformer(num_tokens_source, 
