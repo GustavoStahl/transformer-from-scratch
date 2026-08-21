@@ -1,8 +1,11 @@
 # training configs
 lr: 2e-4
 epochs: 100
-num-heads: 8
-batch-size: 64
-num-enc-dec: 6
-embedding-size: 256
-experiment-name: "tokenizerBPE2k-head8-encdec6-emb256-lr2e4"
+num_heads: 8
+batch_size: 64
+num_enc_dec: 6
+embedding_size: 256
+tokenizer_max_bpe: 2000
+tokenizer_path: "tokenizer2k.pkl"
+tensorboard_dir: "runs"
+experiment_name: "tokenizerBPE2k-head8-encdec6-emb256-lr2e4"

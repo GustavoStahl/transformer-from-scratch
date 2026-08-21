@@ -243,7 +243,7 @@ def train_val_loop(num_epochs: int,
         writer.add_scalar("eval/bleu", bleu_score, step)
         writer.flush()
 
-def set_tensorboard(experiment_name: Optional[str] = None):
+def set_tensorboard(save_dir: str, experiment_name: Optional[str] = None):
     global writer
     if no_tensorboard:
         class DummyWriter:
@@ -254,7 +254,7 @@ def set_tensorboard(experiment_name: Optional[str] = None):
         print("TensorBoard logging is DISABLED.")
     else:
         if experiment_name is not None:
-            writer = SummaryWriter(Path("runs") / experiment_name)
+            writer = SummaryWriter(Path(save_dir) / experiment_name)
         else:
             writer = SummaryWriter()
         print("TensorBoard logging is ENABLED.")    
@@ -286,8 +286,14 @@ def get_args():
                         help="The number of encoder-decoder blocks. The higher the better but slower.")        
     parser.add_argument("--first-n-samples", type=int, default=-1,
                         help="Train using only the first n samples. Useful for debugging.")
+    parser.add_argument("--tokenizer-path", type=str, default="tokenizer.pkl",
+                        help="Tokenizer path to either load from (if exists) or save to.")     
+    parser.add_argument("--tokenizer-max-bpe", type=int, default=2000,
+                        help="Maximum number of byte-pair encodings. Used only when building the tokenizer.")         
     parser.add_argument("--experiment-name", type=str, default=None,
                         help="Name of the experiment.") 
+    parser.add_argument("--tensorboard-dir", type=str, default="runs",
+                        help="Directory where tensorboard will save the run artifacts.")     
     parser.add_argument("--no-tensorboard", action="store_true",
                         help="Disable TensorBoard.")
     parser.add_argument("--train-is-val", action="store_true",
@@ -312,7 +318,7 @@ def main():
 
     global no_tensorboard
     no_tensorboard = args.no_tensorboard
-    set_tensorboard(args.experiment_name)
+    set_tensorboard(args.tensorboard_dir, args.experiment_name)
 
     set_determinism()
     
@@ -325,12 +331,11 @@ def main():
     else:
         val_dataset = ChatTask2024(args.dataset_root, split="valid", source_language="en", first_n_samples=args.first_n_samples)
 
-    tokenizer: TokenizerBPE = None
-    tokenizer_path = Path("tokenizer_bpe.pkl")
+    tokenizer_path = Path(args.tokenizer_path)
     if tokenizer_path.is_file() and tokenizer_path.suffix == ".pkl":
         tokenizer = TokenizerBPE.load(tokenizer_path)
     else:
-        tokenizer = TokenizerBPE(max_bpe=2000)
+        tokenizer = TokenizerBPE(max_bpe=args.tokenizer_max_bpe)
         tokenizer.compute_tokens(np.hstack((train_dataset.source, train_dataset.target)))
         tokenizer.save(tokenizer_path)
 
