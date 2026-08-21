@@ -180,8 +180,7 @@ class PositionalEncoding(nn.Module):
 
 class Transformer(nn.Module):
     def __init__(self, 
-                 num_tokens_X: int, 
-                 num_tokens_Y: int,
+                 num_tokens: int, 
                  padding_idx: int, 
                  num_encoders: int, 
                  num_decoders: int, 
@@ -189,24 +188,23 @@ class Transformer(nn.Module):
                  embedding_size: int, 
                  device: torch.device):
         super().__init__()
-        self.embedding_X = nn.Embedding(num_tokens_X, embedding_size, padding_idx=padding_idx, device=device)
-        self.embedding_Y = nn.Embedding(num_tokens_Y, embedding_size, padding_idx=padding_idx, device=device)
+        self.embedding = nn.Embedding(num_tokens, embedding_size, padding_idx=padding_idx, device=device)
         self.positional_encoding = PositionalEncoding(embedding_size, max_len=1024, device=device)
         self.dropout_encoder = nn.Dropout(0.1, inplace=True)
         self.dropout_decoder = nn.Dropout(0.1, inplace=True)
         self.encoders = nn.ModuleList([Encoder(num_heads, embedding_size, device) for _ in range(num_encoders)])
         self.decoders = nn.ModuleList([Decoder(num_heads, embedding_size, device) for _ in range(num_decoders)])
-        self.linear = nn.Linear(embedding_size, num_tokens_Y, device=device)
+        self.linear = nn.Linear(embedding_size, num_tokens, device=device)
         self.embedding_size_sqrt = torch.tensor(embedding_size).sqrt()
 
     def forward(self, X: torch.Tensor, X_pad_mask: torch.Tensor, Y: torch.Tensor, Y_pad_mask: torch.Tensor) -> torch.Tensor:
-        encoder_in = self.positional_encoding(self.embedding_X(X) * self.embedding_size_sqrt)
+        encoder_in = self.positional_encoding(self.embedding(X) * self.embedding_size_sqrt)
         encoder_in = self.dropout_encoder(encoder_in)
         for encoder in self.encoders:
             encoder_out = encoder(encoder_in, X_pad_mask)
             encoder_in = encoder_out
 
-        decoder_in = self.positional_encoding(self.embedding_Y(Y) * self.embedding_size_sqrt)
+        decoder_in = self.positional_encoding(self.embedding(Y) * self.embedding_size_sqrt)
         decoder_in = self.dropout_decoder(decoder_in)
         for decoder in self.decoders:
             decoder_out = decoder(decoder_in, Y_pad_mask, encoder_out, X_pad_mask)
@@ -243,7 +241,7 @@ if __name__ == "__main__":
     Y = torch.randint(0, num_tokens, (batch_size, seq_len,), device=device)
     Y_pad_mask = torch.randint(0, 2, (batch_size, seq_len,), dtype=bool, device=device)
 
-    transformer = Transformer(num_tokens, num_tokens, padding_idx, num_encoders, num_decoders, num_heads, embedding_size, device)
+    transformer = Transformer(num_tokens, padding_idx, num_encoders, num_decoders, num_heads, embedding_size, device)
     with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=True) as prof:
         with torch.profiler.record_function("model_inference"):
             out: torch.Tensor = transformer(X, X_pad_mask, Y, Y_pad_mask)

@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from dataset import ChatTask2024
-from tokenizer import TokenizerWords
+from tokenizer import TokenizerBPE
 from transformer import Transformer
 from dataloader import CollateFn
 
@@ -85,7 +85,7 @@ def moving_average(element: float, count: int, mean: float) -> float:
     return (element + count * mean) / (count + 1)
 
 @torch.no_grad()
-def val(model: Transformer, val_dataloader: DataLoader, tokenizer_target: TokenizerWords, device: torch.device):
+def val(model: Transformer, val_dataloader: DataLoader, tokenizer: TokenizerBPE, device: torch.device):
     loss = 0.0
     bleu_score = 0.0
     pbar = tqdm(val_dataloader, desc="Validation", leave=False)
@@ -99,7 +99,7 @@ def val(model: Transformer, val_dataloader: DataLoader, tokenizer_target: Tokeni
         target_mask = target_mask.to(device)
 
         # mask created to skip the special token <END> in the target
-        remove_end_token_mask = torch.where(target == TokenizerWords.SpecialTokens.END.id, False, True)
+        remove_end_token_mask = torch.where(target == TokenizerBPE.SpecialTokens.END.id, False, True)
 
         batch_size = source.size(0)
         output_logits: torch.Tensor = model(source, 
@@ -111,20 +111,20 @@ def val(model: Transformer, val_dataloader: DataLoader, tokenizer_target: Tokeni
         # NOTE: skipping the special token <START> in the target
         batch_loss = torch.nn.functional.cross_entropy(output_logits.transpose(1, 2),
                                                        target[..., 1:],
-                                                       ignore_index=TokenizerWords.SpecialTokens.PADDING.id)        
+                                                       ignore_index=TokenizerBPE.SpecialTokens.PADDING.id)        
         
         loss = moving_average(batch_loss.item(), count, loss)
 
         output_tokens: list[list[int]] = output_logits.argmax(dim=-1).cpu().numpy().tolist()
-        output_tokens = tokenizer_target.cap_after_end(output_tokens)
+        output_tokens = tokenizer.cap_after_end(output_tokens)
 
-        output_tokens_str = tokenizer_target.untokenize(output_tokens)
-        target_tokens_str = tokenizer_target.untokenize(tokenizer_target.tokenize(target_str))
+        output_str_group: list[list[str]] = tokenizer.split_texts(tokenizer.untokenize(output_tokens, to_str=True))
+        target_str_group: list[list[str]] = tokenizer.split_texts(target_str)
 
-        batch_bleu_score = compute_bleu_score(output_tokens_str, target_tokens_str)
+        batch_bleu_score = compute_bleu_score(output_str_group, target_str_group)
         bleu_score = moving_average(batch_bleu_score, count, bleu_score)
 
-    output_str = [" ".join(tokens_str) for tokens_str in output_tokens_str]
+    output_str = ["".join(str_group) for str_group in output_str_group]
 
     for count, (s, t, o) in enumerate(zip(source_str, target_str, output_str), start=1):
         if count >= 10:
@@ -156,7 +156,7 @@ def train(model: Transformer,
         target_mask = target_mask.to(device)        
 
         # mask created to skip the special token <END> in the target
-        remove_end_token_mask = torch.where(target == TokenizerWords.SpecialTokens.END.id, False, True)
+        remove_end_token_mask = torch.where(target == TokenizerBPE.SpecialTokens.END.id, False, True)
 
         batch_size = source.size(0)
         output_logits: torch.Tensor = model(source, 
@@ -168,7 +168,7 @@ def train(model: Transformer,
         # NOTE: skipping the special token <START> in the target
         batch_loss = torch.nn.functional.cross_entropy(output_logits.transpose(1, 2),
                                                        target[..., 1:],
-                                                       ignore_index=TokenizerWords.SpecialTokens.PADDING.id,
+                                                       ignore_index=TokenizerBPE.SpecialTokens.PADDING.id,
                                                        label_smoothing=0.1)
 
         batch_loss.backward()
@@ -195,7 +195,7 @@ def train_val_loop(num_epochs: int,
                    scheduler: torch.optim.lr_scheduler.LRScheduler,
                    train_dataloader: DataLoader, 
                    val_dataloader: DataLoader,
-                   tokenizer_target: TokenizerWords,
+                   tokenizer: TokenizerBPE,
                    device: torch.device, 
                    eval_every_n_epochs: int):
 
@@ -220,7 +220,7 @@ def train_val_loop(num_epochs: int,
         pbar.write(f"Validation output (epoch {epoch}): ")
 
         model.eval()
-        val_loss, bleu_score, last_batch_data = val(model, val_dataloader, tokenizer_target, device)
+        val_loss, bleu_score, last_batch_data = val(model, val_dataloader, tokenizer, device)
 
         if bleu_score > best_bleu_score and not no_tensorboard:
             best_bleu_score = bleu_score
@@ -281,6 +281,8 @@ def get_args():
                         help="Name of the experiment.") 
     parser.add_argument("--no-tensorboard", action="store_true",
                         help="Disable TensorBoard.")
+    parser.add_argument("--train-is-val", action="store_true",
+                        help="The validation set is the training set. Useful for debugging (is the model learning?).")
     
     return parser.parse_args()
 
@@ -297,24 +299,31 @@ def main():
     # torch.autograd.set_detect_anomaly(True)
 
     train_dataset = ChatTask2024(args.dataset_root, split="train", source_language="en", first_n_samples=args.first_n_samples)
-    val_dataset = ChatTask2024(args.dataset_root, split="valid", source_language="en", first_n_samples=args.first_n_samples)
+    if args.train_is_val:
+        val_dataset = ChatTask2024(args.dataset_root, split="train", source_language="en", first_n_samples=args.first_n_samples)
+    else:
+        val_dataset = ChatTask2024(args.dataset_root, split="valid", source_language="en", first_n_samples=args.first_n_samples)
 
-    tokenizer_source = TokenizerWords()
-    tokenizer_source.compute_tokens(train_dataset.source)
+    tokenizer: TokenizerBPE = None
+    tokenizer_path = Path("tokenizer_bpe.pkl")
+    if tokenizer_path.exists():
+        tokenizer = TokenizerBPE.load(tokenizer_path)
+    else:
+        tokenizer = TokenizerBPE(max_bpe=2000)
+        tokenizer.compute_tokens(np.hstack((train_dataset.source, train_dataset.target)))
+        tokenizer.save(tokenizer_path)
 
-    tokenizer_target = TokenizerWords()
-    tokenizer_target.compute_tokens(train_dataset.target)
+        from pprint import pprint
+        pprint(tokenizer.bytepair_to_chairpair(step=10))
 
     device = fetch_available_device()
 
     num_heads = 8
     num_encoders = 6
     num_decoders = 6
-    padding_idx = TokenizerWords.SpecialTokens.PADDING.id
-    num_tokens_source = len(tokenizer_source)
-    num_tokens_target = len(tokenizer_target)
-    model = Transformer(num_tokens_source, 
-                        num_tokens_target, 
+    padding_idx = TokenizerBPE.SpecialTokens.PADDING.id
+    num_tokens = len(tokenizer)
+    model = Transformer(num_tokens, 
                         padding_idx, 
                         num_encoders, 
                         num_decoders, 
@@ -327,7 +336,7 @@ def main():
         print(f"Loading model from path: {load_model_path}")
         model.load_state_dict(torch.load(load_model_path, map_location=device))
 
-    collate_fn = CollateFn(tokenizer_source, tokenizer_target)
+    collate_fn = CollateFn(tokenizer)
 
     num_workers = 0
     train_dataloader = DataLoader(train_dataset, 
@@ -358,7 +367,7 @@ def main():
                    scheduler, 
                    train_dataloader, 
                    val_dataloader, 
-                   tokenizer_target, 
+                   tokenizer, 
                    device, 
                    args.eval_every_n_epochs)
 
