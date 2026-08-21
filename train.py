@@ -1,3 +1,4 @@
+import yaml
 import math
 import torch
 import random
@@ -268,21 +269,41 @@ def get_args():
                         help="Validate every n epochs.")
     parser.add_argument("--batch-size", "-b", type=int, default=128,
                         help="Batch size used for training. The higher the better but slower.")
-    parser.add_argument("--embedding-size", "-k", type=int, default=256,
-                        help="Embedding size used for training. The higher the better but slower.")
+    parser.add_argument("--load-model-path", "-p", type=str, default="",
+                        help="Load the model weights from the provided path.")    
     parser.add_argument("--lr", "-l", type=float, default=1e-4,
                         help="Learning rate used for training. "
                              "If too high the model weights might take steep steps during optimization.")  
-    parser.add_argument("--first-n-samples", "-f", type=int, default=-1,
+    parser.add_argument("--config", "-c", type=str,
+                        help="YAML training config. The provided key-values will override their non-provided argparse counterpart.")    
+    parser.add_argument("--device", type=str, default=None,
+                        help="Device used for training. If not provided, automatic selection is performed.")    
+    parser.add_argument("--embedding-size", type=int, default=256,
+                        help="Embedding size used for training. The higher the better but slower.")
+    parser.add_argument("--num-heads", type=int, default=8,
+                        help="The number of heads used by the transformer. The higher the better but slower.")    
+    parser.add_argument("--num-enc-dec", type=int, default=6,
+                        help="The number of encoder-decoder blocks. The higher the better but slower.")        
+    parser.add_argument("--first-n-samples", type=int, default=-1,
                         help="Train using only the first n samples. Useful for debugging.")
-    parser.add_argument("--load-model-path", "-p", type=str, default="",
-                        help="Load the model weights from the provided path.")
     parser.add_argument("--experiment-name", type=str, default=None,
                         help="Name of the experiment.") 
     parser.add_argument("--no-tensorboard", action="store_true",
                         help="Disable TensorBoard.")
     parser.add_argument("--train-is-val", action="store_true",
                         help="The validation set is the training set. Useful for debugging (is the model learning?).")
+
+    # pre-parse
+    args = parser.parse_args()
+
+    # read arguments from config if they exist
+    if args.config:
+        with open(args.config, "r") as f:
+            yaml_config = yaml.safe_load(f)
+        
+        yaml_options = {k: v for k, v in yaml_config.items()}
+        # set the argparse defaults as the ones provided by the config
+        parser.set_defaults(**yaml_options)
     
     return parser.parse_args()
 
@@ -316,18 +337,15 @@ def main():
         from pprint import pprint
         pprint(tokenizer.bytepair_to_chairpair(step=10))
 
-    device = fetch_available_device()
+    device = fetch_available_device() if args.device is None else args.device
 
-    num_heads = 8
-    num_encoders = 6
-    num_decoders = 6
     padding_idx = TokenizerBPE.SpecialTokens.PADDING.id
     num_tokens = len(tokenizer)
     model = Transformer(num_tokens, 
                         padding_idx, 
-                        num_encoders, 
-                        num_decoders, 
-                        num_heads, 
+                        args.num_enc_dec, 
+                        args.num_enc_dec, 
+                        args.num_heads, 
                         args.embedding_size, 
                         device)
 

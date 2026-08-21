@@ -1,0 +1,8 @@
+# training configs
+lr: 2e-4
+epochs: 100
+num-heads: 8
+batch-size: 64
+num-enc-dec: 6
+embedding-size: 256
+experiment-name: "tokenizerBPE2k-head8-encdec6-emb256-lr2e4"
