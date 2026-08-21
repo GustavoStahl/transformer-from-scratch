@@ -1,6 +1,9 @@
+import pickle
 import regex as re
 import numpy as np
 from enum import Enum
+from tqdm import trange
+from pathlib import Path
 from typing import Optional, Union
 from collections import Counter, OrderedDict
 from itertools import pairwise
@@ -37,13 +40,37 @@ class TokenizerBPE(object):
         self.pattern = re.compile(pattern)
 
         self.bpe: OrderedDict[tuple[int, int], int] = OrderedDict()
+
         self.max_bpe = max_bpe
 
     def __len__(self):
         return 256 + len(self.SpecialTokens) + len(self.bpe)
 
-    def bytepair_to_chairpair(self):
-        return {self.untokenize(b, to_str=True)[0] : t for (b, t) in self.bpe.items()}
+    def save(self, path: Union[str, Path]):
+        if isinstance(path, str):
+            path = Path(path)
+
+        assert path.suffix == ".pkl", "Tokenizer save path should contain the file extension .pkl"
+
+        with open(path, "wb") as f:
+            pickle.dump(self.bpe, f)
+
+    @staticmethod
+    def load(path: Union[str, Path]):
+        if isinstance(path, str):
+            path = Path(path)
+
+        assert path.suffix == ".pkl", "Tokenizer save path should contain the file extension .pkl"
+
+        with open(path, "rb") as f:
+            bpe = pickle.load(f)
+
+        tokenizer = TokenizerBPE(len(bpe) - len(TokenizerBPE.SpecialTokens) - 256)
+        tokenizer.bpe = bpe
+        return tokenizer
+
+    def bytepair_to_chairpair(self, step: int = 1) -> dict[str, int]:
+        return {self.untokenize(b, to_str=True)[0] : t for i, (b, t) in enumerate(self.bpe.items(), start=1) if i % step == 0}
 
     def replace_pair_for_token(self, byte_group: list[int], byte_pair: tuple[int], token: int) -> list[int]:
         if len(byte_group) == 1:
@@ -75,6 +102,12 @@ class TokenizerBPE(object):
                 untokenized_text.append(t)
         return untokenized_text
 
+    def split_texts(self, texts: Union[str, list[str]]) -> list[list[str]]:
+        if isinstance(texts, str):
+            texts = [texts,]
+
+        return [self.pattern.findall(text) for text in texts]
+
     def compute_tokens(self, texts: Union[str, list[str]]) -> None:
         if isinstance(texts, str):
             texts = [texts,]
@@ -86,7 +119,7 @@ class TokenizerBPE(object):
         # list: [[105, 115, 116, 111], [32, 110, 195, 163, 111], [32, 102, 97, 122], [32, 115, 101, 110, 116, 105, 100, 111]]
         groups_utf8 = [list(group.encode("utf-8")) for group in self.pattern.findall(texts_join)]
 
-        for _ in range(self.max_bpe):
+        for _ in trange(self.max_bpe, desc="Computing tokens"):
             bp_count = Counter()
             new_token = self.__len__()
 
@@ -112,20 +145,23 @@ class TokenizerBPE(object):
             tokenized_texts.append(text_tokens)
         return tokenized_texts
 
-    def untokenize(self, tokenized_texts: Union[list[int], list[list[int]]], to_str: bool = False) -> list[str]:
+    def untokenize(self, tokenized_texts: Union[list[int], list[list[int]]], to_str: bool = False) -> Union[list[str], list[list[int]]]:
         if isinstance(tokenized_texts, (list, tuple)) and isinstance(tokenized_texts[0], int):
             tokenized_texts = [tokenized_texts,]
 
         untokenized_texts = []
         for tokenized_text in tokenized_texts:
+            # filter out special tokens
+            tokenized_text = [t for t in tokenized_text if t not in range(256, 256 + len(self.SpecialTokens))]
+
             # iterate through every byte pair encoding (last to first added)
-            for byte_pair, new_token in sorted(self.bpe.items(), reverse=True):
+            for byte_pair, new_token in reversed(self.bpe.items()):
                 untokenized_text = self.replace_token_for_pair(tokenized_text, new_token, byte_pair)
                 tokenized_text = untokenized_text
 
             untokenized_texts.append(untokenized_text)
 
-        return [bytes(t).decode("utf-8") for t in untokenized_texts] if to_str else untokenized_texts
+        return [bytes(t).decode("utf-8", errors="replace") for t in untokenized_texts] if to_str else untokenized_texts
 
     @classmethod
     def pad(cls, tokenized_texts: Union[list[int], list[list[int]]], max_len: Optional[int] = None) -> list[list[int]]:
@@ -255,14 +291,20 @@ class TokenizerWords(object):
 
         return tokenized_texts
 
-    def untokenize(self, tokenized_texts: Union[list[int], list[list[int]]], join: bool = False) -> list[str]:
+    def split_texts(self, texts: Union[str, list[str]]) -> list[list[str]]:
+        if isinstance(texts, str):
+            texts = [texts,]
+
+        return [self.pattern.findall(text) for text in texts]    
+
+    def untokenize(self, tokenized_texts: Union[list[int], list[list[int]]], to_str: bool = False) -> Union[list[str], list[list[str]]]:
         if isinstance(tokenized_texts, list) and isinstance(tokenized_texts[0], int):
             tokenized_texts = [tokenized_texts,]
 
         untokenized_texts = [[self.tokenid2token.get(token, self.SpecialTokens.UNKNOWN.str) for token in tokenized_text]
                              for tokenized_text in tokenized_texts]
 
-        if join:
+        if to_str:
             return [" ".join(untokenized_text) for untokenized_text in untokenized_texts]
         
         return untokenized_texts
