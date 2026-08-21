@@ -306,7 +306,7 @@ def main():
 
     tokenizer: TokenizerBPE = None
     tokenizer_path = Path("tokenizer_bpe.pkl")
-    if tokenizer_path.exists():
+    if tokenizer_path.is_file() and tokenizer_path.suffix == ".pkl":
         tokenizer = TokenizerBPE.load(tokenizer_path)
     else:
         tokenizer = TokenizerBPE(max_bpe=2000)
